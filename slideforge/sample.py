@@ -1,3 +1,8 @@
+"""Built-in sample document: a generic business proposal that exercises
+every layout SlideForge supports (hero / content / two-column / cards /
+timeline / closing)."""
+
+SAMPLE_MARKDOWN = """\
 # 業務効率化プラットフォーム導入のご提案
 チームの時間を、創造的な仕事へ。
 
@@ -60,4 +65,4 @@
 
 # ご清聴ありがとうございました
 まずは2週間の無償トライアルから始めませんか？
-
+"""

@@ -4,35 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slideforge"
-version = "0.1.0"
-description = "Generate professional PowerPoint decks from Markdown with automatic layout detection, themes, and text auto-fit"
+version = "0.2.0"
+description = "Generate professional PowerPoint decks from Markdown with themes and automatic layout detection"
 readme = "README.md"
-license = { file = "LICENSE" }
 requires-python = ">=3.10"
-authors = [{ name = "NagaYu" }]
-keywords = ["powerpoint", "pptx", "markdown", "slides", "presentation", "cli"]
+license = { text = "MIT" }
+authors = [{ name = "SlideForge contributors" }]
+keywords = ["powerpoint", "pptx", "markdown", "slides", "presentation"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Topic :: Office/Business :: Office Suites",
-    "Topic :: Text Processing :: Markup :: Markdown",
 ]
-dependencies = ["python-pptx>=1.0"]
+dependencies = ["python-pptx>=0.6.21"]
 
 [project.scripts]
 slideforge = "slideforge.cli:main"
 
-[project.urls]
-Homepage = "https://github.com/NagaYu/slideforge"
-Repository = "https://github.com/NagaYu/slideforge"
-Issues = "https://github.com/NagaYu/slideforge/issues"
+[project.optional-dependencies]
+dev = ["pytest>=7"]
 
-[tool.setuptools]
-packages = ["slideforge"]
+[tool.setuptools.packages.find]
+include = ["slideforge*"]

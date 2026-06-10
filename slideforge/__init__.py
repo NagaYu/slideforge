@@ -1,3 +1,9 @@
-"""SlideForge — Markdown to professional PowerPoint generator."""
+"""SlideForge: Markdown -> professional .pptx generator."""
 
-__version__ = "0.1.0"
+from .parser import parse_markdown
+from .renderer import Renderer
+from .themes import THEMES, get_theme, list_themes
+
+__version__ = "0.2.0"
+__all__ = ["parse_markdown", "Renderer", "THEMES", "get_theme",
+           "list_themes", "__version__"]

@@ -1,160 +1,173 @@
-"""Layout detection, geometry computation, and text auto-fit.
+"""Layout detection + dynamic geometry (Inches) for SlideForge.
 
-All geometry is computed dynamically for a 16:9 canvas (13.333" x 7.5")
-and returned as plain float inches, so the renderer just wraps values in
-``Inches()``.  Nothing here imports python-pptx — the engine is pure math
-and therefore trivially unit-testable.
+The engine looks at the *shape of the content* and picks a composition:
+
+========================  =============================================
+content pattern           layout
+==========================  ===========================================
+title only (first/last)    ``title`` / ``closing``  (hero slide)
+two ``##`` headings         ``two_column``  (left / right split)
+3-4 parallel top bullets    ``cards``       (column card grid)
+numbered list               ``timeline``    (step circles + connector)
+anything else               ``content``     (title + bullets)
+==========================  ===========================================
+
+All geometry is computed dynamically from the slide size so the same
+engine works for 16:9 and 4:3 decks.  Every function returns plain
+``Rect`` tuples in **inches**; only the renderer touches python-pptx.
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
-from .md_parser import Slide
+from .parser import Slide
 
-# ---------------------------------------------------------------- canvas ---
+# 16:9 default canvas (inches)
 SLIDE_W = 13.333
 SLIDE_H = 7.5
-MARGIN = 0.6                 # outer margin
-TITLE_TOP = 0.42
-TITLE_H = 0.85
-CONTENT_TOP = 1.55           # where body content starts on titled slides
-CONTENT_W = SLIDE_W - 2 * MARGIN
+
+MARGIN = 0.6        # outer margin (skill guideline: >= 0.5")
+GAP = 0.4           # gap between cards / columns
+TITLE_TOP = 0.45
+TITLE_H = 0.95
+BODY_TOP = TITLE_TOP + TITLE_H + 0.25
 
 
-@dataclass
-class Box:
+@dataclass(frozen=True)
+class Rect:
     left: float
     top: float
     width: float
     height: float
 
 
-# ------------------------------------------------------- layout detection ---
-LAYOUT_STATEMENT = "statement"        # title-only → full-bleed statement
-LAYOUT_TWO_COLUMN = "two_column"      # two ## headings → left/right split
-LAYOUT_THREE_CARDS = "three_cards"    # three parallel bullets → card grid
-LAYOUT_TIMELINE = "timeline"          # numbered list → step timeline
-LAYOUT_BULLETS = "bullets"            # fallback: classic bullet slide
+# --------------------------------------------------------------------------
+# layout detection
+# --------------------------------------------------------------------------
+
+def detect_layout(slide: Slide, index: int, total: int) -> str:
+    """Pick a layout name for one parsed slide."""
+    has_body = bool(slide.blocks)
+
+    if not has_body:
+        if index == 0:
+            return "title"
+        if index == total - 1:
+            return "closing"
+        return "section"
+
+    if len(slide.steps) >= 2:
+        return "timeline"
+
+    if len(slide.headings) == 2 and all(
+        h.level == 2 for h in slide.headings
+    ):
+        return "two_column"
+
+    bullets = slide.top_bullets
+    if len(bullets) in (3, 4) and not slide.headings:
+        return "cards"
+
+    return "content"
 
 
-def detect_layout(slide: Slide) -> str:
-    """Map a parsed slide onto one of the dynamic layouts."""
-    if slide.is_statement:
-        return LAYOUT_STATEMENT
-    if len(slide.sections) == 2:
-        return LAYOUT_TWO_COLUMN
-    if slide.steps:
-        return LAYOUT_TIMELINE
-    if len(slide.bullets) == 3 and all(b.lead for b in slide.bullets):
-        return LAYOUT_THREE_CARDS
-    return LAYOUT_BULLETS
+# --------------------------------------------------------------------------
+# geometry helpers (all values in inches)
+# --------------------------------------------------------------------------
+
+def title_rect() -> Rect:
+    return Rect(MARGIN, TITLE_TOP, SLIDE_W - 2 * MARGIN, TITLE_H)
 
 
-# ------------------------------------------------------------- geometries ---
-def title_box() -> Box:
-    return Box(MARGIN, TITLE_TOP, CONTENT_W, TITLE_H)
+def body_rect() -> Rect:
+    return Rect(MARGIN, BODY_TOP,
+                SLIDE_W - 2 * MARGIN, SLIDE_H - BODY_TOP - MARGIN)
 
 
-def two_column_boxes(gap: float = 0.45) -> list[Box]:
-    """Two equal cards, side by side."""
-    col_w = (CONTENT_W - gap) / 2
-    h = SLIDE_H - CONTENT_TOP - 0.55
-    return [
-        Box(MARGIN, CONTENT_TOP, col_w, h),
-        Box(MARGIN + col_w + gap, CONTENT_TOP, col_w, h),
-    ]
+def column_rects(n: int = 2, header_h: float = 0.6) -> list[tuple[Rect, Rect]]:
+    """Return ``n`` (header, body) rect pairs side by side."""
+    area = body_rect()
+    col_w = (area.width - GAP * (n - 1)) / n
+    pairs = []
+    for i in range(n):
+        left = area.left + i * (col_w + GAP)
+        header = Rect(left, area.top, col_w, header_h)
+        body = Rect(left, area.top + header_h + 0.1,
+                    col_w, area.height - header_h - 0.1)
+        pairs.append((header, body))
+    return pairs
 
 
-def card_boxes(n: int, gap: float = 0.4) -> list[Box]:
-    """``n`` equal cards in one row (used for the 3-column layout)."""
-    top = CONTENT_TOP + 0.15
-    card_w = (CONTENT_W - gap * (n - 1)) / n
-    h = SLIDE_H - top - 0.7
-    return [Box(MARGIN + i * (card_w + gap), top, card_w, h) for i in range(n)]
+def card_rects(n: int, reserve_bottom: float = 0.0) -> list[Rect]:
+    """Equal-width card rects across the body area (max 4 per row).
+
+    ``reserve_bottom`` shrinks the grid to leave room for a trailing
+    quote / paragraph band below the cards.
+    """
+    area = body_rect()
+    if reserve_bottom:
+        area = Rect(area.left, area.top, area.width,
+                    area.height - reserve_bottom)
+    per_row = min(n, 4) if n != 4 else 2          # 4 cards -> 2x2 grid
+    rows = -(-n // per_row)                       # ceil division
+    card_w = (area.width - GAP * (per_row - 1)) / per_row
+    card_h = (area.height - GAP * (rows - 1)) / rows
+    rects = []
+    for i in range(n):
+        row, col = divmod(i, per_row)
+        rects.append(Rect(
+            area.left + col * (card_w + GAP),
+            area.top + row * (card_h + GAP),
+            card_w, card_h,
+        ))
+    return rects
 
 
-def timeline_geometry(n: int) -> dict:
-    """Horizontal step timeline: connector line, numbered circles, and a
-    text box under each circle.  Spacing adapts to the step count."""
-    n = max(n, 1)
-    circle_d = 0.62
-    line_y = 2.85
-    slot_w = CONTENT_W / n
-    centers = [MARGIN + slot_w * (i + 0.5) for i in range(n)]
-    text_w = min(slot_w - 0.25, 3.2)
+def timeline_positions(n: int) -> dict:
+    """Geometry for a horizontal step timeline.
+
+    Returns dict with the connector line rect, circle rects and
+    label rects for ``n`` steps.  Falls back to two rows when more
+    than 5 steps are present.
+    """
+    area = body_rect()
+    per_row = n if n <= 5 else -(-n // 2)
+    rows = 1 if n <= 5 else 2
+    circle_d = 0.85
+    # cap the row height and center the block vertically so a single-row
+    # timeline does not cling to the top of an otherwise empty slide
+    row_h = min(area.height / rows, 2.9)
+    top_offset = max((area.height - row_h * rows) / 2 - 0.2, 0.0)
+    area = Rect(area.left, area.top + top_offset, area.width, area.height)
+    slot_w = area.width / per_row
+
+    circles, labels, connectors = [], [], []
+    for i in range(n):
+        row, col = divmod(i, per_row)
+        cx = area.left + slot_w * col + slot_w / 2
+        cy = area.top + row * row_h + 0.55
+        circles.append(Rect(cx - circle_d / 2, cy - circle_d / 2,
+                            circle_d, circle_d))
+        labels.append(Rect(area.left + slot_w * col + 0.12,
+                           cy + circle_d / 2 + 0.15,
+                           slot_w - 0.24,
+                           row_h - circle_d - 0.75))
+    for row in range(rows):
+        in_row = min(per_row, n - row * per_row)
+        if in_row >= 2:
+            first = circles[row * per_row]
+            last = circles[row * per_row + in_row - 1]
+            y = first.top + circle_d / 2
+            connectors.append(Rect(first.left + circle_d, y - 0.015,
+                                   last.left - first.left - circle_d, 0.03))
+    return {"circles": circles, "labels": labels, "connectors": connectors}
+
+
+def hero_rects() -> dict:
+    """Centered composition for title / closing / section slides."""
     return {
-        "line": Box(centers[0], line_y + circle_d / 2 - 0.015,
-                    centers[-1] - centers[0], 0.03),
-        "circles": [Box(c - circle_d / 2, line_y, circle_d, circle_d)
-                    for c in centers],
-        "texts": [Box(c - text_w / 2, line_y + circle_d + 0.3, text_w,
-                      SLIDE_H - (line_y + circle_d + 0.3) - 0.5)
-                  for c in centers],
+        "kicker": Rect(MARGIN + 0.2, 2.35, SLIDE_W - 2 * (MARGIN + 0.2), 0.5),
+        "title": Rect(MARGIN + 0.2, 2.9, SLIDE_W - 2 * (MARGIN + 0.2), 1.6),
+        "subtitle": Rect(MARGIN + 0.2, 4.6, SLIDE_W - 2 * (MARGIN + 0.2), 0.9),
     }
-
-
-def bullets_box() -> Box:
-    return Box(MARGIN + 0.1, CONTENT_TOP + 0.1, CONTENT_W - 0.2,
-               SLIDE_H - CONTENT_TOP - 0.65)
-
-
-# ------------------------------------------------------------- auto-fit ----
-def _char_width_pt(ch: str, size_pt: float) -> float:
-    """Rough advance width of one character at ``size_pt``.
-
-    CJK glyphs are full-width (~1.0 em); Latin averages ~0.52 em with a few
-    narrow/wide exceptions.  Estimation errs slightly wide on purpose so the
-    fitter shrinks a step too early rather than a step too late.
-    """
-    o = ord(ch)
-    if o >= 0x2E80:                      # CJK, kana, full-width forms
-        return size_pt * 1.02
-    if ch in "iIljft.,:;!|'`[]()" :
-        return size_pt * 0.32
-    if ch.isupper() or ch in "wmWM@%&":
-        return size_pt * 0.72
-    return size_pt * 0.52
-
-
-def estimate_width_pt(text: str, size_pt: float) -> float:
-    return sum(_char_width_pt(c, size_pt) for c in text)
-
-
-def wrapped_line_count(text: str, size_pt: float, avail_w_pt: float) -> int:
-    if not text:
-        return 1
-    return max(1, math.ceil(estimate_width_pt(text, size_pt) / avail_w_pt))
-
-
-def fit_font_size(
-    lines: list[str],
-    box_w_in: float,
-    box_h_in: float,
-    start_pt: float,
-    min_pt: float = 10,
-    line_spacing: float = 1.18,
-    space_after_pt: float = 6,
-    pad_w_in: float = 0.2,
-    pad_h_in: float = 0.12,
-) -> float:
-    """Largest font size (stepping down 2pt at a time) at which ``lines``
-    fit inside the box.  Never errors: bottoms out at ``min_pt``.
-
-    Each entry in ``lines`` is one paragraph; wrapping inside the box width
-    is estimated per paragraph.
-    """
-    avail_w = (box_w_in - pad_w_in) * 72
-    avail_h = (box_h_in - pad_h_in) * 72
-    if avail_w <= 0 or avail_h <= 0:
-        return min_pt
-
-    size = float(start_pt)
-    while size > min_pt:
-        wrapped = sum(wrapped_line_count(ln, size, avail_w) for ln in lines)
-        needed = wrapped * size * line_spacing + max(len(lines) - 1, 0) * space_after_pt
-        if needed <= avail_h:
-            return size
-        size -= 2
-    return min_pt

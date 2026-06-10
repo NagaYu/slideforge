@@ -1,211 +1,143 @@
-# SlideForge
+# SlideForge ⚒️
 
-**Markdown in, polished PowerPoint out.** SlideForge is a zero-config CLI that
-turns plain Markdown into professional .pptx decks: it detects the structure of
-each slide (two `##` headings → split layout, numbered list → timeline, three
-bold-lead bullets → card grid), applies a color/font theme, and auto-shrinks
-text so nothing ever overflows. Japanese typography is a first-class citizen —
-themes resolve East-Asian fonts per target OS (Yu Gothic on Windows, Hiragino
-on macOS).
+**Markdown → プロ品質の PowerPoint (.pptx) を一発生成する CLI ツール**
 
-```bash
-pip install slideforge
-slideforge proposal.md --all-themes -o output/
+Markdown を書くだけで、テーマカラー・フォント・構図（2カラム / カード型 / タイムライン）を自動で判定・適用した 16:9 のスライドが手に入ります。python-pptx ベース、依存は1つだけ。
+
+```
+# 業務効率化のご提案          ┐
+チームの時間を、創造的な仕事へ。 │──▶  ダークヒーロー表紙
+                              ┘
+## 従来 … / ## 導入後 …       ──▶  左右分割レイアウト
+- A：… / - B：… / - C：…      ──▶  3カラムカード
+1. 分析 2. PoC 3. 展開 …      ──▶  ステップ・タイムライン
 ```
 
 | | |
 |---|---|
-| ![Title slide (TechBlue)](docs/images/title-techblue.jpg) | ![Two-column layout (TechBlue)](docs/images/two-column-techblue.jpg) |
-| ![Card grid (WarmCreative)](docs/images/cards-warmcreative.jpg) | ![Timeline (MinimalGray)](docs/images/timeline-minimalgray.jpg) |
+| ![表紙 (TechBlue)](docs/images/title-techblue.jpg) | ![2カラム (TechBlue)](docs/images/two-column-techblue.jpg) |
+| ![カード (WarmCreative)](docs/images/cards-warmcreative.jpg) | ![タイムライン (MinimalGray)](docs/images/timeline-minimalgray.jpg) |
 
----
-
-Markdown からプロクオリティの PowerPoint(.pptx)を自動生成する汎用 CLI ツールです。
-見出し・箇条書き・番号リストの構造を解析し、**最適なレイアウトを自動選択**して、
-テーマカラー・フォント・配置をすべて動的に計算します。
-
-```
-Markdown ──→ md_parser ──→ layout_engine ──→ renderer ──→ .pptx
-                │               │                │
-            構造解析       レイアウト判定      python-pptx
-                          + 座標計算(Inches)  + Text Auto-fit
-                          + フォント自動縮小
-```
+生成済みのサンプル一式は [examples/](examples/) にあります。
 
 ## インストール
 
-Python 3.10+ が必要です。依存(python-pptx)は自動で入ります。
+```bash
+git clone https://github.com/NagaYu/slideforge.git
+cd slideforge
+pip install .          # または pipx install .
+```
+
+Python 3.10+ / 依存: `python-pptx`
+
+## 使い方
 
 ```bash
-# PyPI 公開後
-pip install slideforge
+# サンプルの提案書 Markdown を出力（samples/汎用ビジネス提案書.md と同内容）
+slideforge sample > proposal.md
 
-# GitHub から直接
-pip install git+https://github.com/NagaYu/slideforge.git
+# テーマを指定してビルド
+slideforge build proposal.md --theme TechBlue
 
-# ローカル開発(クローン済みリポジトリで)
-pip install -e .
+# 全テーマ分を一括生成（テーマ比較に便利）
+slideforge build proposal.md --all-themes -o build/
+
+# 利用可能テーマの一覧
+slideforge themes
 ```
 
-インストールすると `slideforge` コマンドが使えるようになります。
+出力は `<入力ファイル名>_<テーマ名>.pptx`。`-o` に `.pptx` パスを渡せばファイル名も指定できます。
 
-## クイックスタート
+## Markdown の書き方
 
-```bash
-# 同梱のサンプル提案書 Markdown を書き出す
-slideforge --write-sample proposal.md
+| 記法 | 結果 |
+|------|------|
+| `# 見出し` | 新しいスライド（タイトル） |
+| `---` | スライド区切り |
+| タイトル直後の行 | サブタイトル（表紙では中央寄せイタリック） |
+| `## 見出し` ×2 | **左右分割レイアウト**に自動変換 |
+| 並列な箇条書き ×3〜4 | **カード型レイアウト**（3カラム / 2×2グリッド） |
+| `1.` `2.` … 番号付きリスト | **ステップ・タイムライン**（6個以上は2段組） |
+| `- 項目` / 2スペース字下げ | 箇条書き / サブ箇条書き |
+| `> 引用` | アクセントカラーのイタリック表示 |
+| `**強調**` | 太字 |
 
-# 1テーマで生成
-slideforge proposal.md --theme TechBlue -o proposal.pptx
+カードの見出しは `- **タイトル**：本文` のように「：」や `:` で区切ると、タイトル＋本文に自動分割されます。
 
-# 全テーマ一括生成(テーマ比較に便利)
-slideforge proposal.md --all-themes -o output/
+### レイアウト自動判定のルール
 
-# タイトルスライドにフッターを入れる
-slideforge proposal.md -t WarmCreative --footer "Acme Inc. | 2026-06-10"
-
-# 配布先が Windows 中心なら和文フォントを游ゴシック系で焼き込む
-slideforge proposal.md --fonts win
-```
-
-## Markdown の書き方とレイアウト自動判定
-
-スライドは `---` で区切ります。各スライドの内容から、以下のルールでレイアウトが
-自動選択されます(`layout_engine.detect_layout`)。
-
-| Markdown の構造 | 選択されるレイアウト |
-|---|---|
-| 最初のスライド(`#` + 本文テキスト) | **タイトルスライド**(ダーク背景・ステートメント型) |
-| `##` 見出しが **2つ** | **左右分割レイアウト**(2カラムカード) |
-| 番号付きリスト(`1.` `2.` …) | **ステップ・タイムライン**(番号サークル + 接続線) |
-| `**太字リード:** 説明` 形式の箇条書きが **ちょうど3つ** | **3カラムカード型**(番号バッジ付きカード) |
-| `#` のみで本文なし | **ステートメントスライド**(締めの挨拶など) |
-| 上記以外 | **標準箇条書き**レイアウト |
-
-箇条書きで `- **リード:** 本文` と書くと、リード部分が見出しフォント・太字で
-強調されます。本文中の `**強調**` も太字ランとして反映されます。
-
-### サンプル
-
-```markdown
-# 提案タイトル
-
-サブタイトル(タイトルスライドの説明文になります)
-
----
-
-# 現状の課題と解決アプローチ
-
-## 現状の課題
-- **属人化:** 手順が担当者の経験に依存
-- **二重入力:** 部門間でデータが分断
-
-## 解決アプローチ
-- **標準化:** 業務フローを棚卸し
-- **連携基盤:** API ハブでデータを自動同期
-
----
-
-# 導入ロードマップ
-
-1. **現状分析:** ヒアリングと棚卸し(第1〜4週)
-2. **設計:** アーキテクチャ設計(第5〜8週)
-3. **構築:** 段階的構築(第9〜16週)
-```
+1. 番号付きリストが2つ以上 → `timeline`
+2. `##` がちょうど2つ → `two_column`
+3. 並列箇条書きが3〜4個（見出しなし） → `cards`
+4. 本文なし＋先頭/末尾スライド → `title` / `closing`（ヒーロー）
+5. それ以外 → `content`（タイトル＋箇条書き）
 
 ## テーマ
 
-| テーマ名 | 雰囲気 | 主要色 |
-|---|---|---|
-| `TechBlue` | テック / SaaS 提案向けの信頼感あるネイビー | ミッドナイトネイビー × エレクトリックブルー |
-| `MinimalGray` | 役員向け資料などフォーマルなモノクローム | チャコール × ニアブラック(見出しはセリフ体) |
-| `WarmCreative` | ブランド / クリエイティブ案件向けの温かみ | テラコッタ × サンド × スレートティール |
+| テーマ | 雰囲気 | タイトルフォント | 特徴 |
+|--------|--------|------------------|------|
+| `TechBlue` | ネイビー×ミント | Trebuchet MS | ダーク表紙、角丸カード |
+| `MinimalGray` | チャコール無彩色 | Georgia | 全編ライト、直角カード |
+| `WarmCreative` | テラコッタ×セージ | Palatino | 大きな角丸、温かみ |
 
-### 和文フォントとクロスプラットフォーム対応
+### 文字溢れ防止（Auto-fit）
 
-.pptx には1ランにつき1書体しか記録できないため、テーマは和文フォントを
-**論理名**(`gothic` / `round_gothic` / `mincho`)で持ち、生成時に
-ターゲットOSの実フォントへ解決します(`--fonts auto|win|mac`)。
-
-| 論理名 | `--fonts win`(Windows 標準) | `--fonts mac`(macOS 標準) |
-|---|---|---|
-| `gothic` | Yu Gothic(游ゴシック) | Hiragino Kaku Gothic ProN |
-| `round_gothic` | Yu Gothic ※丸ゴ非搭載のため | Hiragino Maru Gothic ProN |
-| `mincho` | Yu Mincho(游明朝) | Hiragino Mincho ProN |
-
-既定の `auto` は生成マシンのOSに合わせます。**配布先の閲覧環境に合わせて
-選ぶ**のがコツです(社外配布なら Windows 率の高い `--fonts win` が無難)。
-カスタムテーマで具体的なフォント名を直接書いた場合はそのまま使われます。
-
-## 文字溢れ防止(Text Auto-fit)
-
-すべてのテキストは描画前に `layout_engine.fit_font_size()` を通過します。
-
-- 文字種ごとの概算字幅(CJK ≒ 1.0em、欧文 ≒ 0.3〜0.7em)から折り返し行数を推定
-- ボックスの高さに収まるまでフォントサイズを **2pt ずつ自動縮小**
-- 下限(既定 10pt)で必ず停止するため、**どんな長文でもエラーになりません**
-- 推定はあえて広めに見積もり、「1段階早めに縮める」安全側に倒しています
-
-## プロジェクト構成
-
-```
-SlideForge/
-├── slideforge/
-│   ├── themes.py         # テーマ定義(配色 RGB・フォント・背景ルール)+ OS別フォント解決
-│   ├── md_parser.py      # Markdown → スライドモデル(Deck/Slide/Section/Item)
-│   ├── layout_engine.py  # レイアウト判定・座標計算・Auto-fit(pptx 非依存の純粋ロジック)
-│   ├── renderer.py       # python-pptx による描画レイヤー
-│   └── cli.py            # CLI エントリポイント + サンプル Markdown
-├── tests/test_slideforge.py
-├── pyproject.toml        # パッケージ定義(`slideforge` コマンドの entry point)
-├── LICENSE               # MIT
-└── samples/              # サンプル Markdown
-```
+テキストがボックスに収まらない場合、フォントサイズを **2pt ずつ自動で縮小**します（最小9pt、エラーは出しません）。複数の文字サイズが混在するボックスは、視覚的な階層を保ったまま全体を均等にスケールダウンします。CJK文字は全角幅で計算されるため、日本語でも溢れません。
 
 ## 拡張方法
 
-### 新しいテーマを追加する
+### テーマを追加する
 
-`slideforge/themes.py` の `THEMES` に辞書を1つ追加するだけです。
+[slideforge/themes.py](slideforge/themes.py) の `THEMES` 辞書にエントリを1つ追加するだけです。
 
 ```python
-THEMES["OceanDeep"] = {
+THEMES["ForestGreen"] = {
+    "display_name": "Forest Green",
     "colors": {
-        "bg": (255, 255, 255), "text": (33, 41, 92), "muted": (120, 130, 150),
-        "primary": (6, 90, 130), "accent": (28, 114, 147),
-        "card_bg": (232, 242, 247), "card_line": (200, 220, 232),
-        "title_bg": (33, 41, 92), "title_text": (255, 255, 255),
-        "title_sub": (180, 205, 225),
+        "primary": (44, 95, 45),     # タイトル・強調
+        "secondary": (151, 188, 98), # サブ見出し
+        "accent": (245, 245, 245),   # 番号サークル等
+        "bg": (255, 255, 255), "bg_dark": (24, 48, 24),
+        "text": (40, 50, 40), "text_inverse": (240, 245, 240),
+        "muted": (130, 140, 130),
+        "card_bg": (243, 248, 240), "card_border": (210, 225, 200),
     },
-    "fonts": {"head": "Cambria", "body": "Calibri",
-              "head_ea": "mincho",      # 論理名 → OS別に自動解決
-              "body_ea": "gothic"},     # 具体名を書けばそのまま固定
+    "fonts": {"title": "Cambria", "body": "Calibri"},
+    "rules": {
+        "dark_title_slide": True,   # 表紙をダーク背景に
+        "card_corner_radius": 0.15, # カード角丸 (0=直角)
+        "bullet_char": "▸",
+    },
 }
 ```
 
-色のロール(`primary` が支配色、`accent` は数字バッジなど鋭い差し色)を守れば、
-レンダラー側の変更は不要です。
+### レイアウトを追加する
 
-### 新しいレイアウトを追加する
+1. [slideforge/layout_engine.py](slideforge/layout_engine.py) — `detect_layout()` に判定条件を追加し、ジオメトリ関数（インチ単位の `Rect` を返す）を書く
+2. [slideforge/renderer.py](slideforge/renderer.py) — `render_<name>()` メソッドを追加し、`render()` のディスパッチに1行追加
 
-1. `layout_engine.py` — 判定条件を `detect_layout()` に追加し、座標計算関数
-   (`Box` のリストを返す純粋関数)を書く
-2. `renderer.py` — `_render_xxx(slide, theme, s)` を実装し、`_RENDERERS` に登録
+レイアウトエンジンは python-pptx に依存しない純粋な座標計算なので、単体テストが容易です。
 
-座標計算とレンダリングが分離されているため、ジオメトリは pptx を import せずに
-単体テストできます(`tests/test_slideforge.py` 参照)。
+### アーキテクチャ
+
+```
+parser.py        Markdown → Slide/Block モデル（依存ゼロ）
+layout_engine.py 構図判定 + インチ単位のジオメトリ計算（依存ゼロ）
+autofit.py       文字溢れ防止のフォントサイズ計算（依存ゼロ）
+themes.py        配色・フォント・ルールの辞書（依存ゼロ）
+renderer.py      ↑すべてを束ねて python-pptx で描画
+cli.py           argparse ベースの CLI
+```
 
 ## テスト
 
 ```bash
-python tests/test_slideforge.py        # 依存なしで実行可
-# または
-python -m pytest tests/ -q
+pip install -e ".[dev]"
+pytest
 ```
 
-パーサ・レイアウト判定・ジオメトリ対称性・Auto-fit の単調性・全テーマでの
-pptx 生成と再読込(OOXML 妥当性)を検証します。
+パーサ・レイアウト判定・ジオメトリ・Auto-fit・全テーマのエンドツーエンド生成・**コンテンツ欠落ゼロ保証**（入力Markdownの全行が出力pptxに存在すること）を検証します。
 
 ## ライセンス
 
-MIT(同梱の `LICENSE` を参照)
+MIT

@@ -1,325 +1,429 @@
-"""python-pptx rendering layer.
+"""Renders parsed slides into a .pptx file using python-pptx.
 
-Takes a parsed ``Deck``, a theme dict, and turns layout-engine geometry
-into actual shapes.  All text passes through ``layout_engine.fit_font_size``
-so nothing ever overflows its box.
+The renderer is the only module that imports python-pptx.  It consumes:
+* the slide model from :mod:`slideforge.parser`
+* layout decisions / geometry from :mod:`slideforge.layout_engine`
+* colors & fonts from :mod:`slideforge.themes`
+* safe font sizing from :mod:`slideforge.autofit`
 """
 
 from __future__ import annotations
 
-import re
-
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
-from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
-from pptx.oxml.ns import qn
-from pptx.util import Emu, Inches, Pt
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.util import Inches, Pt
 
+from . import autofit
 from . import layout_engine as le
-from .md_parser import Deck, Item, Slide
-from .themes import resolve_fonts
+from .layout_engine import Rect
+from .parser import Block, Slide
 
-_INLINE_BOLD = re.compile(r"\*\*(.+?)\*\*")
-
-
-# ------------------------------------------------------------- text utils ---
-def _set_run(run, theme: dict, *, role: str = "body", size: float = 16,
-             bold: bool = False, color=None, italic: bool = False) -> None:
-    f = run.font
-    f.name = theme["fonts"][role]
-    f.size = Pt(size)
-    f.bold = bold
-    f.italic = italic
-    f.color.rgb = RGBColor(*(color or theme["colors"]["text"]))
-    # python-pptx only sets the Latin typeface; mirror it onto <a:ea> so CJK
-    # text picks up the theme's East-Asian font instead of a fallback.
-    rPr = run._r.get_or_add_rPr()
-    for tag in ("a:ea", "a:cs"):
-        el = rPr.find(qn(tag))
-        if el is None:
-            el = rPr.makeelement(qn(tag), {})
-            rPr.append(el)
-        el.set("typeface", theme["fonts"][f"{role}_ea"])
-
-
-def _add_runs(para, text: str, theme: dict, **kw) -> None:
-    """Split ``**bold**`` spans into bold runs; everything else as-is."""
-    pos = 0
-    for m in _INLINE_BOLD.finditer(text):
-        if m.start() > pos:
-            r = para.add_run()
-            r.text = text[pos:m.start()]
-            _set_run(r, theme, **kw)
-        r = para.add_run()
-        r.text = m.group(1)
-        _set_run(r, theme, **{**kw, "bold": True})
-        pos = m.end()
-    if pos < len(text):
-        r = para.add_run()
-        r.text = text[pos:]
-        _set_run(r, theme, **kw)
-
-
-def _textbox(slide, box: le.Box, *, anchor=MSO_ANCHOR.TOP):
-    tb = slide.shapes.add_textbox(Inches(box.left), Inches(box.top),
-                                  Inches(box.width), Inches(box.height))
-    tf = tb.text_frame
-    tf.word_wrap = True
-    tf.auto_size = MSO_AUTO_SIZE.NONE
-    tf.vertical_anchor = anchor
-    tf.margin_left = tf.margin_right = Inches(0.06)
-    tf.margin_top = tf.margin_bottom = Inches(0.03)
-    return tb, tf
-
-
-def _para(tf, first: bool):
-    return tf.paragraphs[0] if first else tf.add_paragraph()
-
-
-# ------------------------------------------------------------ shape utils ---
-def _fill(shape, rgb, line_rgb=None) -> None:
-    shape.fill.solid()
-    shape.fill.fore_color.rgb = RGBColor(*rgb)
-    if line_rgb is None:
-        shape.line.fill.background()
-    else:
-        shape.line.color.rgb = RGBColor(*line_rgb)
-        shape.line.width = Pt(1)
-    shape.shadow.inherit = False
-
-
-def _rect(slide, box: le.Box, rgb, *, rounded=True, line_rgb=None, radius=0.06):
-    kind = MSO_SHAPE.ROUNDED_RECTANGLE if rounded else MSO_SHAPE.RECTANGLE
-    sp = slide.shapes.add_shape(kind, Inches(box.left), Inches(box.top),
-                                Inches(box.width), Inches(box.height))
-    if rounded:
-        try:
-            sp.adjustments[0] = radius
-        except (IndexError, ValueError):
-            pass
-    _fill(sp, rgb, line_rgb)
-    return sp
-
-
-def _background(slide, rgb) -> None:
-    slide.background.fill.solid()
-    slide.background.fill.fore_color.rgb = RGBColor(*rgb)
-
-
-# --------------------------------------------------------------- elements ---
-def _slide_title(slide, theme: dict, text: str) -> None:
-    box = le.title_box()
-    _, tf = _textbox(slide, box, anchor=MSO_ANCHOR.MIDDLE)
-    size = le.fit_font_size([text], box.width, box.height, 30, min_pt=20)
-    p = _para(tf, True)
-    _add_runs(p, text, theme, role="head", size=size, bold=True,
-              color=theme["colors"]["primary"])
-
-
-def _footer(slide, theme: dict, deck_title: str, page: int) -> None:
-    _, tf = _textbox(slide, le.Box(le.MARGIN, le.SLIDE_H - 0.42,
-                                   le.CONTENT_W, 0.3))
-    p = _para(tf, True)
-    p.alignment = PP_ALIGN.RIGHT
-    r = p.add_run()
-    r.text = f"{deck_title}   |   {page:02d}"
-    _set_run(r, theme, size=9, color=theme["colors"]["muted"])
-
-
-def _items_into(tf, items: list[Item], theme: dict, box: le.Box,
-                start_pt: float, *, lead_color, marker="●") -> None:
-    """Write bullets (with optional bold leads) into a text frame,
-    auto-fitting font size to the box."""
-    lines = []
-    for it in items:
-        lines.append((f"{it.lead} — " if it.lead else "") + it.body)
-    size = le.fit_font_size(lines, box.width, box.height, start_pt)
-    first = True
-    for it in items:
-        p = _para(tf, first)
-        first = False
-        p.space_after = Pt(max(size * 0.45, 4))
-        p.line_spacing = 1.12
-        r = p.add_run()
-        r.text = f"{marker}  "
-        _set_run(r, theme, size=size * 0.62, color=theme["colors"]["accent"])
-        if it.lead:
-            r = p.add_run()
-            r.text = f"{it.lead}　"
-            _set_run(r, theme, role="head", size=size, bold=True,
-                     color=lead_color)
-        _add_runs(p, it.body, theme, size=size)
-
-
-# ---------------------------------------------------------------- layouts ---
-def _render_statement(slide, theme: dict, title: str, subtitle: str = "",
-                      footer: str = "") -> None:
-    """Dark full-bleed slide for the deck title and closing statements."""
-    c = theme["colors"]
-    _background(slide, c["title_bg"])
-    # small brand glyph above the title
-    _rect(slide, le.Box(0.95, 2.18, 0.3, 0.3), c["title_sub"], rounded=True,
-          radius=0.5)
-    box = le.Box(0.9, 2.7, le.SLIDE_W - 2.4, 1.9)
-    _, tf = _textbox(slide, box)
-    size = le.fit_font_size([title], box.width, box.height, 40, min_pt=24)
-    p = _para(tf, True)
-    _add_runs(p, title, theme, role="head", size=size, bold=True,
-              color=c["title_text"])
-    if subtitle:
-        # place the subtitle below however many lines the title wrapped to
-        n_lines = le.wrapped_line_count(title, size, (box.width - 0.2) * 72)
-        sbox = le.Box(0.92, box.top + n_lines * size / 72 * 1.3 + 0.3,
-                      le.SLIDE_W - 2.4, 1.0)
-        _, tf2 = _textbox(slide, sbox)
-        ssize = le.fit_font_size([subtitle], sbox.width, sbox.height, 18)
-        p2 = _para(tf2, True)
-        _add_runs(p2, subtitle, theme, size=ssize, color=c["title_sub"])
-    if footer:
-        _, tf3 = _textbox(slide, le.Box(0.92, le.SLIDE_H - 0.75,
-                                        le.SLIDE_W - 2.4, 0.4))
-        p3 = _para(tf3, True)
-        r = p3.add_run()
-        r.text = footer
-        _set_run(r, theme, size=11, color=c["title_sub"])
-
-
-def _render_two_column(slide, theme: dict, s: Slide) -> None:
-    c = theme["colors"]
-    for box, section in zip(le.two_column_boxes(), s.sections):
-        _rect(slide, box, c["card_bg"], line_rgb=c["card_line"])
-        head_box = le.Box(box.left + 0.3, box.top + 0.28, box.width - 0.6, 0.55)
-        _, tf = _textbox(slide, head_box)
-        hsize = le.fit_font_size([section.heading], head_box.width,
-                                 head_box.height, 19, min_pt=14)
-        p = _para(tf, True)
-        _add_runs(p, section.heading, theme, role="head", size=hsize,
-                  bold=True, color=c["primary"])
-        body_box = le.Box(box.left + 0.3, box.top + 1.0,
-                          box.width - 0.6, box.height - 1.3)
-        _, tf2 = _textbox(slide, body_box)
-        _items_into(tf2, section.items, theme, body_box, 15,
-                    lead_color=c["text"])
-
-
-def _render_three_cards(slide, theme: dict, s: Slide) -> None:
-    c = theme["colors"]
-    for i, (box, item) in enumerate(zip(le.card_boxes(3), s.bullets), 1):
-        _rect(slide, box, c["card_bg"], line_rgb=c["card_line"])
-        d = 0.52
-        circle = le.Box(box.left + 0.3, box.top + 0.32, d, d)
-        sp = _rect(slide, circle, c["accent"], rounded=True, radius=0.5)
-        tf = sp.text_frame
-        tf.word_wrap = False
-        tf.margin_left = tf.margin_right = 0
-        tf.margin_top = tf.margin_bottom = 0
-        p = tf.paragraphs[0]
-        p.alignment = PP_ALIGN.CENTER
-        r = p.add_run()
-        r.text = str(i)
-        _set_run(r, theme, role="head", size=20, bold=True,
-                 color=(255, 255, 255))
-        head_box = le.Box(box.left + 0.3, box.top + 1.05, box.width - 0.6, 0.9)
-        _, tfh = _textbox(slide, head_box)
-        hsize = le.fit_font_size([item.lead or ""], head_box.width,
-                                 head_box.height, 17, min_pt=13)
-        ph = _para(tfh, True)
-        _add_runs(ph, item.lead or "", theme, role="head", size=hsize,
-                  bold=True, color=c["primary"])
-        body_box = le.Box(box.left + 0.3, box.top + 1.95,
-                          box.width - 0.6, box.height - 2.25)
-        _, tfb = _textbox(slide, body_box)
-        bsize = le.fit_font_size([item.body], body_box.width,
-                                 body_box.height, 14)
-        pb = _para(tfb, True)
-        pb.line_spacing = 1.2
-        _add_runs(pb, item.body, theme, size=bsize)
-
-
-def _render_timeline(slide, theme: dict, s: Slide) -> None:
-    c = theme["colors"]
-    geo = le.timeline_geometry(len(s.steps))
-    _rect(slide, geo["line"], c["card_line"], rounded=False)
-    for i, (circle, tbox, step) in enumerate(
-            zip(geo["circles"], geo["texts"], s.steps), 1):
-        sp = _rect(slide, circle, c["accent"] if i < len(s.steps)
-                   else c["primary"], rounded=True, radius=0.5)
-        tf = sp.text_frame
-        tf.margin_left = tf.margin_right = 0
-        tf.margin_top = tf.margin_bottom = 0
-        p = tf.paragraphs[0]
-        p.alignment = PP_ALIGN.CENTER
-        r = p.add_run()
-        r.text = str(i)
-        _set_run(r, theme, role="head", size=22, bold=True,
-                 color=(255, 255, 255))
-        _, tft = _textbox(slide, tbox)
-        lead = step.lead or step.body
-        body = step.body if step.lead else ""
-        lsize = le.fit_font_size([lead], tbox.width, 0.6, 16, min_pt=12)
-        pl = _para(tft, True)
-        pl.alignment = PP_ALIGN.CENTER
-        _add_runs(pl, lead, theme, role="head", size=lsize, bold=True,
-                  color=c["primary"])
-        if body:
-            bsize = le.fit_font_size([body], tbox.width, tbox.height - 0.6, 13)
-            pb = tft.add_paragraph()
-            pb.alignment = PP_ALIGN.CENTER
-            pb.space_before = Pt(6)
-            pb.line_spacing = 1.15
-            _add_runs(pb, body, theme, size=bsize, color=c["text"])
-
-
-def _render_bullets(slide, theme: dict, s: Slide) -> None:
-    c = theme["colors"]
-    box = le.bullets_box()
-    _, tf = _textbox(slide, box)
-    lines: list[Item] = list(s.bullets)
-    if s.paragraphs:
-        lines = [Item(body=p) for p in s.paragraphs] + lines
-    for sec in s.sections:                     # 1 or >2 sections: flatten
-        lines.append(Item(body=sec.heading, lead=None))
-        lines.extend(sec.items)
-    _items_into(tf, lines, theme, box, 17, lead_color=c["text"])
-
-
-# ------------------------------------------------------------------ deck ---
-_RENDERERS = {
-    le.LAYOUT_TWO_COLUMN: _render_two_column,
-    le.LAYOUT_THREE_CARDS: _render_three_cards,
-    le.LAYOUT_TIMELINE: _render_timeline,
-    le.LAYOUT_BULLETS: _render_bullets,
+# base font sizes (pt) -- autofit may scale these down, never up
+SIZE = {
+    "hero_title": 44,
+    "hero_sub": 18,
+    "kicker": 14,
+    "title": 32,
+    "col_header": 20,
+    "card_title": 17,
+    "body": 16,
+    "card_body": 13,
+    "step_label": 14,
+    "footer": 10,
 }
 
 
-def render_deck(deck: Deck, theme: dict, output_path: str,
-                footer_note: str = "", font_target: str = "auto") -> list[str]:
-    """Render the deck and return the layout name used for each slide."""
-    theme = resolve_fonts(theme, font_target)
-    prs = Presentation()
-    prs.slide_width = Emu(int(le.SLIDE_W * 914400))
-    prs.slide_height = Emu(int(le.SLIDE_H * 914400))
-    blank = prs.slide_layouts[6]
-    used: list[str] = []
+def _rgb(t) -> RGBColor:
+    return RGBColor(*t)
 
-    title_slide = prs.slides.add_slide(blank)
-    _render_statement(title_slide, theme, deck.title, deck.subtitle,
-                      footer=footer_note)
-    used.append("title")
 
-    for s in deck.slides:
-        slide = prs.slides.add_slide(blank)
-        layout = le.detect_layout(s)
-        used.append(layout)
-        if layout == le.LAYOUT_STATEMENT:
-            _render_statement(slide, theme, s.title)
-            continue
-        _background(slide, theme["colors"]["bg"])
-        if s.title:
-            _slide_title(slide, theme, s.title)
-        _RENDERERS[layout](slide, theme, s)
-        _footer(slide, theme, deck.title, len(used))
+class Renderer:
+    def __init__(self, theme: dict):
+        self.theme = theme
+        self.c = theme["colors"]
+        self.f = theme["fonts"]
+        self.rules = theme["rules"]
+        self.prs = Presentation()
+        self.prs.slide_width = Inches(le.SLIDE_W)
+        self.prs.slide_height = Inches(le.SLIDE_H)
+        self.blank = self.prs.slide_layouts[6]
 
-    prs.save(output_path)
-    return used
+    # -- low level helpers -------------------------------------------------
+
+    def _new_slide(self, dark: bool = False):
+        slide = self.prs.slides.add_slide(self.blank)
+        fill = slide.background.fill
+        fill.solid()
+        fill.fore_color.rgb = _rgb(self.c["bg_dark"] if dark else self.c["bg"])
+        return slide
+
+    def _textbox(self, slide, rect: Rect, anchor=MSO_ANCHOR.TOP):
+        box = slide.shapes.add_textbox(
+            Inches(rect.left), Inches(rect.top),
+            Inches(rect.width), Inches(rect.height))
+        tf = box.text_frame
+        tf.word_wrap = True
+        tf.vertical_anchor = anchor
+        tf.margin_left = tf.margin_right = Inches(0.02)
+        tf.margin_top = tf.margin_bottom = Inches(0.02)
+        return tf
+
+    def _para(self, tf, runs, size, color, *, font=None, bold=False,
+              align=PP_ALIGN.LEFT, italic=False, space_after=6,
+              first=False, bullet_char=None, bullet_color=None,
+              indent_level=0):
+        p = tf.paragraphs[0] if first and not tf.paragraphs[0].runs \
+            else tf.add_paragraph()
+        p.alignment = align
+        p.space_after = Pt(space_after)
+        p.line_spacing = 1.12
+        if isinstance(runs, str):
+            runs = [(runs, False)]
+        if bullet_char:
+            r = p.add_run()
+            r.text = ("    " if indent_level else "") + bullet_char + "  "
+            r.font.size = Pt(max(size - 4, 9))
+            r.font.color.rgb = _rgb(bullet_color or self.c["accent"])
+            r.font.name = self.f["body"]
+        for text, run_bold in runs:
+            r = p.add_run()
+            r.text = text
+            r.font.size = Pt(size)
+            r.font.bold = bold or run_bold
+            r.font.italic = italic
+            r.font.color.rgb = _rgb(color)
+            r.font.name = font or self.f["body"]
+        return p
+
+    def _card(self, slide, rect: Rect, fill=None, line=None):
+        radius = self.rules.get("card_corner_radius", 0.1)
+        shape_type = (MSO_SHAPE.ROUNDED_RECTANGLE if radius > 0
+                      else MSO_SHAPE.RECTANGLE)
+        shape = slide.shapes.add_shape(
+            shape_type, Inches(rect.left), Inches(rect.top),
+            Inches(rect.width), Inches(rect.height))
+        if radius > 0:
+            try:
+                shape.adjustments[0] = radius
+            except (IndexError, ValueError):
+                pass
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = _rgb(fill or self.c["card_bg"])
+        shape.line.color.rgb = _rgb(line or self.c["card_border"])
+        shape.line.width = Pt(1)
+        shape.shadow.inherit = False
+        return shape
+
+    def _footer(self, slide, page: int, deck_title: str):
+        tf = self._textbox(
+            slide, Rect(le.MARGIN, le.SLIDE_H - 0.42,
+                        le.SLIDE_W - 2 * le.MARGIN, 0.3))
+        p = self._para(tf, deck_title, SIZE["footer"], self.c["muted"],
+                       first=True, space_after=0)
+        r = p.add_run()
+        r.text = f"   ·   {page:02d}"
+        r.font.size = Pt(SIZE["footer"])
+        r.font.color.rgb = _rgb(self.c["muted"])
+        r.font.name = self.f["body"]
+
+    def _slide_title(self, slide, text: str):
+        tf = self._textbox(slide, le.title_rect(), anchor=MSO_ANCHOR.MIDDLE)
+        size = autofit.fit_font_size(
+            text, le.title_rect().width, le.title_rect().height,
+            SIZE["title"], min_pt=20)
+        self._para(tf, text, size, self.c["primary"],
+                   font=self.f["title"], bold=True, first=True,
+                   space_after=0)
+
+    # -- hero (title / section / closing) ----------------------------------
+
+    def render_hero(self, slide_model: Slide, kind: str, page: int):
+        dark = self.rules.get("dark_title_slide", True)
+        slide = self._new_slide(dark=dark)
+        rects = le.hero_rects()
+        title_color = self.c["text_inverse"] if dark else self.c["primary"]
+        sub_color = self.c["text_inverse"] if dark else self.c["text"]
+
+        # small kicker dot motif (theme accent), centered above the title
+        dot_d = 0.16
+        dot = slide.shapes.add_shape(
+            MSO_SHAPE.OVAL, Inches(le.SLIDE_W / 2 - dot_d / 2),
+            Inches(rects["kicker"].top + 0.18), Inches(dot_d), Inches(dot_d))
+        dot.fill.solid()
+        dot.fill.fore_color.rgb = _rgb(self.c["accent"])
+        dot.line.fill.background()
+        dot.shadow.inherit = False
+
+        tf = self._textbox(slide, rects["title"], anchor=MSO_ANCHOR.MIDDLE)
+        size = autofit.fit_font_size(
+            slide_model.title, rects["title"].width, rects["title"].height,
+            SIZE["hero_title"], min_pt=24)
+        self._para(tf, slide_model.title, size, title_color,
+                   font=self.f["title"], bold=True,
+                   align=PP_ALIGN.CENTER, first=True, space_after=0)
+
+        if slide_model.subtitle:
+            tf = self._textbox(slide, rects["subtitle"])
+            self._para(tf, slide_model.subtitle, SIZE["hero_sub"], sub_color,
+                       align=PP_ALIGN.CENTER, italic=True, first=True,
+                       space_after=0)
+
+    # -- standard content ---------------------------------------------------
+
+    def render_content(self, slide_model: Slide, page: int, deck: str):
+        slide = self._new_slide()
+        self._slide_title(slide, slide_model.title)
+        area = le.body_rect()
+        tf = self._textbox(slide, area)
+
+        paras = []
+        for b in slide_model.blocks:
+            base = SIZE["col_header"] if b.kind == "heading" else SIZE["body"]
+            paras.append((b.text, base))
+        scale = autofit.fit_scale(paras, area.width, area.height)
+
+        first = True
+        for b in slide_model.blocks:
+            if b.kind == "heading":
+                self._para(tf, b.runs, max(int(SIZE["col_header"] * scale), 12),
+                           self.c["primary"], font=self.f["title"], bold=True,
+                           first=first, space_after=8)
+            elif b.kind == "bullet":
+                self._para(tf, b.runs, max(int(SIZE["body"] * scale), 10),
+                           self.c["text"], first=first,
+                           bullet_char=self.rules["bullet_char"],
+                           indent_level=b.level)
+            elif b.kind == "quote":
+                self._para(tf, b.runs, max(int(SIZE["body"] * scale), 10),
+                           self.c["secondary"], italic=True, first=first,
+                           space_after=10)
+            else:
+                self._para(tf, b.runs, max(int(SIZE["body"] * scale), 10),
+                           self.c["text"], first=first)
+            first = False
+        self._footer(slide, page, deck)
+
+    # -- two column ----------------------------------------------------------
+
+    def render_two_column(self, slide_model: Slide, page: int, deck: str):
+        slide = self._new_slide()
+        self._slide_title(slide, slide_model.title)
+
+        # split blocks into the two ## sections; blocks appearing before
+        # the first heading are folded into the first section so nothing
+        # is silently dropped
+        sections, current, orphans = [], None, []
+        for b in slide_model.blocks:
+            if b.kind == "heading":
+                current = {"head": b, "items": []}
+                sections.append(current)
+            elif current is not None:
+                current["items"].append(b)
+            else:
+                orphans.append(b)
+        sections = sections[:2]
+        if orphans and sections:
+            sections[0]["items"][:0] = orphans
+
+        for (head_rect, body_rect), sec in zip(le.column_rects(2), sections):
+            # column header: bold colored text, no decorative bar
+            tf = self._textbox(slide, head_rect, anchor=MSO_ANCHOR.MIDDLE)
+            hsize = autofit.fit_font_size(
+                sec["head"].text, head_rect.width, head_rect.height,
+                SIZE["col_header"], min_pt=14)
+            self._para(tf, sec["head"].runs, hsize, self.c["secondary"],
+                       font=self.f["title"], bold=True, first=True,
+                       space_after=0)
+
+            card = self._card(slide, body_rect)
+            tf = card.text_frame
+            tf.word_wrap = True
+            tf.vertical_anchor = MSO_ANCHOR.TOP
+            tf.margin_left = tf.margin_right = Inches(0.22)
+            tf.margin_top = tf.margin_bottom = Inches(0.18)
+
+            paras = [(b.text, SIZE["body"]) for b in sec["items"]]
+            scale = autofit.fit_scale(
+                paras, body_rect.width - 0.44, body_rect.height - 0.36)
+            first = True
+            for b in sec["items"]:
+                self._para(tf, b.runs, max(int(SIZE["body"] * scale), 10),
+                           self.c["text"], first=first,
+                           bullet_char=(self.rules["bullet_char"]
+                                        if b.kind == "bullet" else None),
+                           indent_level=b.level)
+                first = False
+        self._footer(slide, page, deck)
+
+    # -- cards (3-4 parallel bullets) -----------------------------------------
+
+    @staticmethod
+    def _split_card(block: Block) -> tuple[str, list[str]]:
+        """bullet -> (card title, body lines)"""
+        if block.children:
+            return block.text, [c.text for c in block.children]
+        for sep in ("：", ": ", " — ", " - "):
+            if sep in block.text:
+                head, _, rest = block.text.partition(sep)
+                return head.strip(), [rest.strip()]
+        return block.text, []
+
+    def render_cards(self, slide_model: Slide, page: int, deck: str):
+        slide = self._new_slide()
+        self._slide_title(slide, slide_model.title)
+        bullets = slide_model.top_bullets
+        # quotes / paragraphs around the bullets render as a band below
+        # the cards so no content is ever silently dropped
+        extras = [b for b in slide_model.blocks
+                  if b.kind in ("quote", "para")]
+        reserve = 0.8 if extras else 0.0
+        rects = le.card_rects(len(bullets), reserve_bottom=reserve)
+
+        for i, (rect, block) in enumerate(zip(rects, bullets)):
+            card = self._card(slide, rect)
+            # numbered accent circle motif, top-left inside the card
+            d = 0.42
+            circ = slide.shapes.add_shape(
+                MSO_SHAPE.OVAL, Inches(rect.left + 0.22),
+                Inches(rect.top + 0.22), Inches(d), Inches(d))
+            circ.fill.solid()
+            circ.fill.fore_color.rgb = _rgb(self.c["accent"])
+            circ.line.fill.background()
+            circ.shadow.inherit = False
+            ctf = circ.text_frame
+            ctf.margin_left = ctf.margin_right = 0
+            ctf.margin_top = ctf.margin_bottom = 0
+            p = ctf.paragraphs[0]
+            p.alignment = PP_ALIGN.CENTER
+            r = p.add_run()
+            r.text = str(i + 1)
+            r.font.size = Pt(15)
+            r.font.bold = True
+            r.font.color.rgb = _rgb(self.c["bg"])
+            r.font.name = self.f["title"]
+
+            title, lines = self._split_card(block)
+            text_rect = Rect(rect.left + 0.24, rect.top + 0.22 + d + 0.12,
+                             rect.width - 0.48,
+                             rect.height - d - 0.7)
+            tf = self._textbox(slide, text_rect)
+            paras = [(title, SIZE["card_title"])] + \
+                    [(ln, SIZE["card_body"]) for ln in lines]
+            scale = autofit.fit_scale(paras, text_rect.width,
+                                      text_rect.height)
+            self._para(tf, title, max(int(SIZE["card_title"] * scale), 11),
+                       self.c["primary"], font=self.f["title"], bold=True,
+                       first=True, space_after=8)
+            for ln in lines:
+                self._para(tf, ln, max(int(SIZE["card_body"] * scale), 9),
+                           self.c["text"], space_after=5)
+
+        if extras:
+            area = le.body_rect()
+            band = Rect(area.left, area.top + area.height - reserve + 0.15,
+                        area.width, reserve - 0.15)
+            tf = self._textbox(slide, band, anchor=MSO_ANCHOR.MIDDLE)
+            first = True
+            for b in extras:
+                size = autofit.fit_font_size(
+                    b.text, band.width, band.height / len(extras),
+                    SIZE["body"], min_pt=11)
+                self._para(tf, b.runs, size, self.c["secondary"],
+                           italic=(b.kind == "quote"), bold=True,
+                           align=PP_ALIGN.CENTER, first=first,
+                           space_after=2)
+                first = False
+        self._footer(slide, page, deck)
+
+    # -- timeline / steps ------------------------------------------------------
+
+    def render_timeline(self, slide_model: Slide, page: int, deck: str):
+        slide = self._new_slide()
+        self._slide_title(slide, slide_model.title)
+        steps = slide_model.steps
+        geo = le.timeline_positions(len(steps))
+
+        # connector line first (sits behind the circles)
+        for conn in geo["connectors"]:
+            bar = slide.shapes.add_shape(
+                MSO_SHAPE.RECTANGLE, Inches(conn.left), Inches(conn.top),
+                Inches(conn.width), Inches(conn.height))
+            bar.fill.solid()
+            bar.fill.fore_color.rgb = _rgb(self.c["card_border"])
+            bar.line.fill.background()
+            bar.shadow.inherit = False
+
+        for i, (circle, label, step) in enumerate(
+                zip(geo["circles"], geo["labels"], steps)):
+            shape = slide.shapes.add_shape(
+                MSO_SHAPE.OVAL, Inches(circle.left), Inches(circle.top),
+                Inches(circle.width), Inches(circle.height))
+            shape.fill.solid()
+            shape.fill.fore_color.rgb = _rgb(
+                self.c["primary"] if i % 2 == 0 else self.c["secondary"])
+            shape.line.fill.background()
+            shape.shadow.inherit = False
+            ctf = shape.text_frame
+            ctf.margin_left = ctf.margin_right = 0
+            p = ctf.paragraphs[0]
+            p.alignment = PP_ALIGN.CENTER
+            r = p.add_run()
+            r.text = str(i + 1)
+            r.font.size = Pt(22)
+            r.font.bold = True
+            r.font.color.rgb = _rgb(self.c["bg"])
+            r.font.name = self.f["title"]
+
+            title, lines = self._split_card(step)
+            tf = self._textbox(slide, label)
+            paras = [(title, SIZE["step_label"])] + \
+                    [(ln, SIZE["step_label"] - 2) for ln in lines]
+            scale = autofit.fit_scale(paras, label.width, label.height)
+            self._para(tf, title, max(int(SIZE["step_label"] * scale), 9),
+                       self.c["primary"], bold=True, align=PP_ALIGN.CENTER,
+                       first=True, space_after=4)
+            for ln in lines:
+                self._para(tf, ln,
+                           max(int((SIZE["step_label"] - 2) * scale), 9),
+                           self.c["muted"], align=PP_ALIGN.CENTER,
+                           space_after=2)
+
+        # non-step blocks (intro text, quotes) go into a bottom band
+        extras = [b for b in slide_model.blocks if b.kind != "step"]
+        if extras:
+            band = Rect(le.MARGIN, le.SLIDE_H - le.MARGIN - 0.75,
+                        le.SLIDE_W - 2 * le.MARGIN, 0.7)
+            tf = self._textbox(slide, band, anchor=MSO_ANCHOR.MIDDLE)
+            first = True
+            for b in extras:
+                size = autofit.fit_font_size(
+                    b.text, band.width, band.height / len(extras),
+                    SIZE["body"] - 2, min_pt=10)
+                self._para(tf, b.runs, size, self.c["secondary"],
+                           italic=(b.kind == "quote"),
+                           align=PP_ALIGN.CENTER, first=first,
+                           space_after=2)
+                first = False
+        self._footer(slide, page, deck)
+
+    # -- entry point -------------------------------------------------------------
+
+    def render(self, slides: list[Slide], out_path: str) -> str:
+        deck_title = slides[0].title if slides else "SlideForge"
+        total = len(slides)
+        for i, sm in enumerate(slides):
+            layout = le.detect_layout(sm, i, total)
+            if layout in ("title", "closing", "section"):
+                self.render_hero(sm, layout, i + 1)
+            elif layout == "two_column":
+                self.render_two_column(sm, i + 1, deck_title)
+            elif layout == "cards":
+                self.render_cards(sm, i + 1, deck_title)
+            elif layout == "timeline":
+                self.render_timeline(sm, i + 1, deck_title)
+            else:
+                self.render_content(sm, i + 1, deck_title)
+        self.prs.save(out_path)
+        return out_path
