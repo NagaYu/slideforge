@@ -20,8 +20,8 @@ A one-line subtitle.        │──▶  dark hero cover
 | ![Cover (TechBlue)](docs/images/title-techblue.jpg) | ![Two-column (TechBlue)](docs/images/two-column-techblue.jpg) |
 | ![Cards (WarmCreative)](docs/images/cards-warmcreative.jpg) | ![Timeline (MinimalGray)](docs/images/timeline-minimalgray.jpg) |
 
-> The sample deck used in these screenshots is written in Japanese to demonstrate
-> CJK support. A full set of generated samples lives in [examples/](examples/).
+> A full set of generated samples lives in [examples/](examples/), including a
+> Japanese deck that demonstrates CJK support.
 
 ## Install
 
