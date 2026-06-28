@@ -3,66 +3,66 @@ every layout SlideForge supports (hero / content / two-column / cards /
 timeline / closing)."""
 
 SAMPLE_MARKDOWN = """\
-# 業務効率化プラットフォーム導入のご提案
-チームの時間を、創造的な仕事へ。
+# Workflow Automation Platform Proposal
+Give your team time back for creative work.
 
 ---
 
-# 現状の課題
+# The Problem Today
 
-- 部門ごとにツールが分断され、情報共有に**平均2.5時間/日**を消費
-- 手作業のレポート集計により月次決算が**5営業日**遅延
-- ナレッジが属人化し、引き継ぎコストが増大
-- リモートワーク環境での進捗可視化が困難
-
----
-
-# 従来手法との比較
-
-## 従来のワークフロー
-
-- メール・Excel・口頭連絡が混在
-- 集計・転記などの手作業が中心
-- 状況把握に都度ヒアリングが必要
-- ミスの発見が月末にずれ込む
-
-## 導入後のワークフロー
-
-- 情報を**単一プラットフォーム**に集約
-- 集計・レポートは完全自動生成
-- ダッシュボードでリアルタイム可視化
-- 異常値は即日アラートで検知
+- Tools are siloed by department, costing **2.5 hours/day** on average in information sharing
+- Manual report aggregation delays the monthly close by **5 business days**
+- Knowledge stays locked in individuals, driving up handover costs
+- Tracking progress in a remote-work setup is difficult
 
 ---
 
-# ソリューションの3つの柱
+# Before vs. After
 
-- **自動データ連携**：既存の基幹システム・SaaSとAPI連携し、転記作業をゼロに
-- **AIレポート生成**：日次・週次・月次レポートを自動作成し、確認作業のみに短縮
-- **ナレッジハブ**：業務手順とノウハウを一元管理し、検索3秒で誰でも参照可能
+## Today's Workflow
 
----
+- Email, spreadsheets, and verbal updates are mixed together
+- Work centers on manual aggregation and re-keying
+- Status checks require ad-hoc interviews each time
+- Mistakes surface only at month-end
 
-# 導入ステップ
+## Workflow After Adoption
 
-1. 現状分析：業務フローの棚卸しと課題の定量化（2週間）
-2. PoC実施：1部門で効果検証、KPIを測定（1ヶ月）
-3. 段階展開：部門単位でロールアウト（3ヶ月）
-4. 全社定着：研修と運用ルールの整備（2ヶ月）
-5. 効果測定：ROIレビューと改善サイクル確立
-
----
-
-# 期待される効果
-
-- 情報共有コストを**60%削減**（年間換算 4,800時間）
-- 月次決算を5営業日から**2営業日**へ短縮
-- 新人の立ち上がり期間を平均3ヶ月から1ヶ月へ
-
-> 投資回収期間は導入後 約8ヶ月を見込みます。
+- Information consolidated onto a **single platform**
+- Reports generated fully automatically
+- Real-time visibility through dashboards
+- Anomalies flagged same-day via alerts
 
 ---
 
-# ご清聴ありがとうございました
-まずは2週間の無償トライアルから始めませんか？
+# Three Pillars of the Solution
+
+- **Automated data sync**: API-connects to existing core systems and SaaS, cutting re-keying to zero
+- **AI report generation**: Auto-creates daily, weekly, and monthly reports, leaving only review
+- **Knowledge hub**: Centralizes procedures and know-how, searchable by anyone in 3 seconds
+
+---
+
+# Rollout Steps
+
+1. Assess: Inventory workflows and quantify pain points (2 weeks)
+2. Run a PoC: Validate impact in one department, measure KPIs (1 month)
+3. Phased rollout: Deploy department by department (3 months)
+4. Company-wide adoption: Training and operating rules (2 months)
+5. Measure impact: ROI review and a continuous improvement loop
+
+---
+
+# Expected Impact
+
+- Cut information-sharing cost by **60%** (4,800 hours/year)
+- Shorten the monthly close from 5 business days to **2 business days**
+- Reduce new-hire ramp-up from 3 months to 1 month on average
+
+> We expect the investment to pay back in about 8 months.
+
+---
+
+# Thank You
+Why not start with a free 2-week trial?
 """

@@ -36,7 +36,7 @@ Python 3.10+ / dependency: `python-pptx`
 ## Usage
 
 ```bash
-# Print a sample proposal in Markdown (same content as samples/汎用ビジネス提案書.md)
+# Print a sample proposal in Markdown
 slideforge sample > proposal.md
 
 # Build with a specific theme

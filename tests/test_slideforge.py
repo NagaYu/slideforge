@@ -137,10 +137,10 @@ def test_sample_renders_for_every_theme(tmp_path, theme_name):
     all_text = "\n".join(
         sh.text_frame.text for s in prs.slides
         for sh in s.shapes if sh.has_text_frame)
-    assert "現状の課題" in all_text
-    assert "AIレポート生成" in all_text
+    assert "The Problem Today" in all_text
+    assert "AI report generation" in all_text
     # quotes attached to a cards slide must not be dropped
-    assert "投資回収期間" in all_text
+    assert "pay back" in all_text
 
 
 def test_no_content_lost_in_any_layout(tmp_path):
